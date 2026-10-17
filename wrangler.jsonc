@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nudge",
+  "main": "src/server.ts",
+  // Must not be newer than the bundled workerd runtime, or local dev refuses
+  // to start. Bump together with `wrangler`/`@cloudflare/vite-plugin`.
+  "compatibility_date": "2026-10-12",
+  "compatibility_flags": ["nodejs_compat"],
+  // Workers AI has no local emulator, so dev proxies this binding to your
+  // Cloudflare account (`wrangler login` once). See README for offline mode.
+  "ai": { "binding": "AI", "remote": true },
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "NudgeAgent",
+        "name": "NudgeAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["NudgeAgent"],
+      "tag": "v1"
+    }
+  ],
+  "observability": { "enabled": true }
+}

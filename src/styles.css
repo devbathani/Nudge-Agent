@@ -1,0 +1,45 @@
+@import "tailwindcss";
+@import "@cloudflare/kumo/styles/tailwind";
+@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+
+/* Kumo switches themes with <html data-mode="dark">; make Tailwind's dark:
+   variant follow the same switch instead of the OS media query. */
+@custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+@keyframes nudge-ring {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+  20% {
+    transform: rotate(14deg);
+  }
+  40% {
+    transform: rotate(-12deg);
+  }
+  60% {
+    transform: rotate(8deg);
+  }
+  80% {
+    transform: rotate(-4deg);
+  }
+}
+.nudge-ring {
+  animation: nudge-ring 0.9s ease-in-out 1;
+  transform-origin: top center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nudge-ring {
+    animation: none;
+  }
+}
