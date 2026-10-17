@@ -32,13 +32,17 @@ import {
   templateNudge
 } from "./lib/prompts";
 import {
+  backoffMinutes,
+  DEFAULT_MAX_NUDGES,
   escalationLevel,
   generateTaskId,
+  hasNudgesLeft,
   isActive,
   nextOccurrence,
   normalizeTaskId,
   planNextNudge,
   resolveMaxNudges,
+  resolveSnoozeUntil,
   transition
 } from "./lib/tasks";
 import {
@@ -48,8 +52,8 @@ import {
   getZonedParts,
   isValidTimeZone,
   localDayKey,
+  minutesFromLocalTime,
   normalizeHHMM,
-  parseHHMM,
   timeBucket,
   toLocalIso,
   utcCronForLocalTime,
@@ -344,6 +348,12 @@ export class NudgeAgent
     if (fields.persistence) patch.persistence = fields.persistence;
     if (fields.maxNudges !== undefined) {
       patch.maxNudges = resolveMaxNudges(persistence, fields.maxNudges);
+    } else if (
+      fields.persistence &&
+      task.maxNudges === DEFAULT_MAX_NUDGES[task.persistence]
+    ) {
+      // Still on the old persistence's default cap: follow the new default.
+      patch.maxNudges = DEFAULT_MAX_NUDGES[fields.persistence];
     }
 
     let rescheduleAt: Date | null = null;
@@ -371,6 +381,8 @@ export class NudgeAgent
 
     this.store.updateTask(task.id, patch);
     if (rescheduleAt) await this.scheduleTaskAt(task.id, rescheduleAt);
+    // e.g. a raised maxNudges on a task whose reminders had already stopped.
+    else await this.resumeIfStalled(task.id);
     this.store.logEvent("updated", task.id, now, {
       fields: Object.keys(fields)
     });
@@ -386,25 +398,30 @@ export class NudgeAgent
 
     const now = new Date();
     const prefs = this.prefs;
-    let until: Date;
+    let untilInput: Date | undefined;
     if (opts.until) {
       const v = validateDueAt(opts.until, now, prefs.timezone);
       if (!v.ok) return fail(v.error);
-      until = v.date;
-    } else {
-      const minutes =
+      untilInput = v.date;
+    }
+    const snooze = resolveSnoozeUntil({
+      status: task.status,
+      dueAt: new Date(task.dueAt),
+      now,
+      until: untilInput,
+      minutes:
         opts.minutes ??
         this.store.getLearnings().preferredSnoozeMinutes ??
-        DEFAULT_SNOOZE_MINUTES;
-      until = new Date(now.getTime() + minutes * 60_000);
-    }
+        DEFAULT_SNOOZE_MINUTES
+    });
+    if (!snooze.ok) return fail(snooze.error);
+    const until = snooze.until;
     const fireAt = this.deferForQuiet(until, prefs);
 
+    // A snoozed task always gets its reminder, even at the cap (hasNudgesLeft).
     this.store.updateTask(task.id, {
       status: next.status,
-      snoozedUntil: until.toISOString(),
-      // An explicit snooze always earns one more reminder, even at the cap.
-      maxNudges: Math.max(task.maxNudges, task.nudgeCount + 1)
+      snoozedUntil: until.toISOString()
     });
     this.store.logEvent("snoozed", task.id, now, {
       minutes: Math.round((until.getTime() - now.getTime()) / 60_000),
@@ -434,12 +451,15 @@ export class NudgeAgent
 
     const now = new Date();
     const prefs = this.prefs;
-    await this.clearSchedule(task);
+    // Write the new status before the first await: a concurrent second
+    // completion (chat + panel) then fails the transition check instead of
+    // creating a duplicate next occurrence.
     this.store.updateTask(task.id, {
       status: next.status,
       completedAt: now.toISOString(),
       snoozedUntil: null
     });
+    await this.clearSchedule(task.id);
     this.store.logEvent("completed", task.id, now, {
       nudgeCount: task.nudgeCount,
       minutesSinceNudge: task.lastNudgedAt
@@ -491,8 +511,8 @@ export class NudgeAgent
     if (!task) return this.notFound(id);
     const next = transition(task.status, "cancel");
     if (!next.ok) return fail(next.error);
-    await this.clearSchedule(task);
     this.store.updateTask(task.id, { status: next.status, snoozedUntil: null });
+    await this.clearSchedule(task.id);
     this.store.logEvent("cancelled", task.id, new Date());
     this.syncState();
     return { ok: true as const, task: this.present(this.mustGet(task.id)) };
@@ -587,6 +607,7 @@ export class NudgeAgent
           task.id,
           this.deferForQuiet(new Date(until), prefs)
         );
+        this.syncState();
         return;
       }
     }
@@ -601,7 +622,7 @@ export class NudgeAgent
       return;
     }
 
-    if (task.nudgeCount >= task.maxNudges) {
+    if (!hasNudgesLeft(task.status, task.nudgeCount, task.maxNudges)) {
       this.store.logEvent("exhausted", task.id, now, {
         nudgeCount: task.nudgeCount
       });
@@ -648,14 +669,21 @@ export class NudgeAgent
 
     this.refreshLearnings();
     this.syncState();
-    await this.postAutonomousMessage(`🔔 ${text}`, {
-      kind: "nudge",
-      at: at.toISOString(),
-      taskId: fresh.id,
-      level,
-      nudgeNumber,
-      maxNudges: fresh.maxNudges
-    });
+    // The scheduler swallows callback errors, so never let a failed chat write
+    // also suppress the toast / system notification below.
+    try {
+      await this.postAutonomousMessage(`🔔 ${text}`, {
+        kind: "nudge",
+        at: at.toISOString(),
+        taskId: fresh.id,
+        level,
+        nudgeNumber,
+        // A snoozed task may get one reminder past its cap.
+        maxNudges: Math.max(fresh.maxNudges, nudgeNumber)
+      });
+    } catch (error) {
+      console.error("Couldn't add the nudge to the chat", error);
+    }
     this.broadcastEvent({
       type: "nudge/fired",
       taskId: fresh.id,
@@ -673,12 +701,11 @@ export class NudgeAgent
     // Re-derive the UTC cron in case the zone's offset changed (DST).
     await this.ensureBriefingSchedule();
 
-    const target = parseHHMM(prefs.briefingTime) ?? 8 * 60;
-    const p = getZonedParts(now, prefs.timezone);
-    let minutesEarly = target - (p.hour * 60 + p.minute);
-    if (minutesEarly < -12 * 60) minutesEarly += 24 * 60;
-    // Fired early because of an offset change: the re-derived cron runs later today.
-    if (minutesEarly > 10) return;
+    // Fired well before the local briefing time (the UTC offset changed): the
+    // re-derived cron runs later today. Late firings still post.
+    if (minutesFromLocalTime(now, prefs.timezone, prefs.briefingTime) < -10) {
+      return;
+    }
 
     const today = localDayKey(now, prefs.timezone);
     if (this.store.getPref("lastBriefingDay") === today) return;
@@ -696,10 +723,14 @@ export class NudgeAgent
       today: b.dueToday.length,
       snoozed: b.snoozed.length
     });
-    await this.postAutonomousMessage(text, {
-      kind: "briefing",
-      at: now.toISOString()
-    });
+    try {
+      await this.postAutonomousMessage(text, {
+        kind: "briefing",
+        at: now.toISOString()
+      });
+    } catch (error) {
+      console.error("Couldn't add the briefing to the chat", error);
+    }
     this.broadcastEvent({ type: "nudge/briefing", text });
   }
 
@@ -757,8 +788,13 @@ export class NudgeAgent
   }
 
   /**
-   * Point a task's single reminder at `at`. Bumping sched_seq first means any
-   * older alarm for this task becomes a no-op even if cancelling it fails.
+   * Point a task's single reminder at `at`.
+   *
+   * The seq bump happens synchronously, before any await, so concurrent calls
+   * (a chat tool and a panel click) always get distinct seqs and only the
+   * newest alarm can ever fire. Older alarms become no-ops even if
+   * cancelling them fails; a schedule created by a superseded call is
+   * cancelled as soon as we notice.
    */
   private async scheduleTaskAt(
     id: string,
@@ -766,19 +802,24 @@ export class NudgeAgent
   ): Promise<{ ok: true } | Fail> {
     const task = this.store.getTask(id);
     if (!task) return fail(`Task ${id} not found.`);
-    if (task.scheduleId) await this.safeCancel(task.scheduleId);
+    const previous = task.scheduleId;
     const seq = task.schedSeq + 1;
     this.store.updateTask(id, {
       schedSeq: seq,
       scheduleId: null,
       nextNudgeAt: at.toISOString()
     });
+    if (previous) await this.safeCancel(previous);
     try {
       const schedule = await this.schedule<TaskDuePayload>(at, "onTaskDue", {
         taskId: id,
         seq
       });
-      this.store.updateTask(id, { scheduleId: schedule.id });
+      if (this.store.getTask(id)?.schedSeq === seq) {
+        this.store.updateTask(id, { scheduleId: schedule.id });
+      } else {
+        await this.safeCancel(schedule.id);
+      }
       return { ok: true };
     } catch (error) {
       console.error("Scheduling failed", error);
@@ -788,13 +829,16 @@ export class NudgeAgent
     }
   }
 
-  private async clearSchedule(task: TaskRecord) {
-    if (task.scheduleId) await this.safeCancel(task.scheduleId);
-    this.store.updateTask(task.id, {
+  /** Stop a task's reminders. Invalidates synchronously, then cancels. */
+  private async clearSchedule(id: string) {
+    const task = this.store.getTask(id);
+    if (!task) return;
+    this.store.updateTask(id, {
       schedSeq: task.schedSeq + 1,
       scheduleId: null,
       nextNudgeAt: null
     });
+    if (task.scheduleId) await this.safeCancel(task.scheduleId);
   }
 
   private async safeCancel(scheduleId: string) {
@@ -811,19 +855,31 @@ export class NudgeAgent
    */
   private async repairSchedules() {
     const live = new Set((await this.listSchedules()).map((s) => s.id));
-    const prefs = this.prefs;
-    const now = Date.now();
-    for (const task of this.store.listTasks("all")) {
-      if (!isActive(task.status) || task.nudgeCount >= task.maxNudges) continue;
+    for (const task of this.store.listActive()) {
+      if (!hasNudgesLeft(task.status, task.nudgeCount, task.maxNudges)) continue;
       if (task.scheduleId && live.has(task.scheduleId)) continue;
-      const wanted = Date.parse(
-        task.nextNudgeAt ?? task.snoozedUntil ?? task.dueAt
-      );
-      await this.scheduleTaskAt(
-        task.id,
-        this.deferForQuiet(new Date(Math.max(now, wanted)), prefs)
-      );
+      await this.scheduleTaskAt(task.id, this.nextReminderFor(task));
     }
+  }
+
+  /** Re-arm an active task that has nudges left but no pending reminder. */
+  private async resumeIfStalled(id: string) {
+    const task = this.store.getTask(id);
+    if (!task || !isActive(task.status) || task.scheduleId) return;
+    if (!hasNudgesLeft(task.status, task.nudgeCount, task.maxNudges)) return;
+    await this.scheduleTaskAt(task.id, this.nextReminderFor(task));
+  }
+
+  /** When a task's next reminder should fire, never in the past or in quiet hours. */
+  private nextReminderFor(task: TaskRecord): Date {
+    const now = Date.now();
+    const explicit = task.nextNudgeAt ?? task.snoozedUntil;
+    const wanted = explicit
+      ? Date.parse(explicit)
+      : task.nudgeCount === 0
+        ? Date.parse(task.dueAt)
+        : now + backoffMinutes(task.nudgeCount) * 60_000;
+    return this.deferForQuiet(new Date(Math.max(now, wanted)), this.prefs);
   }
 
   private async ensureBriefingSchedule() {
@@ -901,10 +957,8 @@ export class NudgeAgent
       .toLowerCase();
     if (needle.length < 3) return null;
     const matches = this.store
-      .listTasks("all")
-      .filter(
-        (t) => isActive(t.status) && t.title.toLowerCase().includes(needle)
-      );
+      .listActive()
+      .filter((t) => t.title.toLowerCase().includes(needle));
     return matches.length === 1 ? matches[0] : null;
   }
 
@@ -940,7 +994,7 @@ export class NudgeAgent
 function friendlyModelError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (
-    /binding|not configured|remote|authenticat|unauthori[sz]ed|10000/i.test(
+    /binding|not configured|remote|authenticat|unauthori[sz]ed|\b10000\b/i.test(
       message
     )
   ) {

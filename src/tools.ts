@@ -8,6 +8,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { parseDurationMinutes } from "./lib/time";
 import type { Persistence, Repeat, TaskFilter } from "./lib/types";
 
 export interface AddTaskInput {
@@ -68,14 +69,29 @@ const optString = (description: string) =>
     .optional()
     .describe(description);
 
-const optInt = (min: number, max: number, description: string) =>
+/** First number in the value ("5", "5 nudges" → 5), or null. */
+function parseLooseNumber(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const m = /-?\d+(?:\.\d+)?/.exec(String(v));
+  return m ? Number(m[0]) : null;
+}
+
+/**
+ * Optional integer. Unparseable input is passed through unchanged so zod
+ * rejects it with a clear message (instead of silently becoming 0).
+ */
+const optInt = (
+  min: number,
+  max: number,
+  description: string,
+  parse: (v: unknown) => number | null = parseLooseNumber
+) =>
   z
     .preprocess((v) => {
       const b = blank(v);
       if (b === undefined) return undefined;
-      const n =
-        typeof b === "number" ? b : Number(String(b).replace(/[^\d.-]/g, ""));
-      return Number.isFinite(n) ? Math.round(n) : b;
+      const n = parse(b);
+      return n === null ? b : Math.round(n);
     }, z.number().int().min(min).max(max).optional())
     .optional()
     .describe(description);
@@ -163,7 +179,12 @@ export function createTools(svc: NudgeService) {
         "Snooze a task: pause reminders for some minutes or until a specific time. If the user gives no duration, omit both and the learned default is used.",
       inputSchema: z.object({
         id: taskId,
-        minutes: optInt(1, 60 * 24 * 30, "Snooze for this many minutes."),
+        minutes: optInt(
+          1,
+          60 * 24 * 30,
+          "Snooze for this many minutes (e.g. 60 for one hour).",
+          parseDurationMinutes
+        ),
         until: optString(`Or snooze until this time. ${DUE_AT_HELP}`)
       }),
       execute: async ({ id, minutes, until }) =>

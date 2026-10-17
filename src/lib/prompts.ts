@@ -176,6 +176,7 @@ export function sanitizeNudgeText(
   let out = text
     .replace(/<\/?[^>]+>/g, "")
     .replace(/^\s*(?:message|reminder)\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
     .trim()
     .replace(/^["'“”]+|["'“”]+$/g, "")
     .trim();

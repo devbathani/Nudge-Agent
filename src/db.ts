@@ -21,6 +21,9 @@ export type SqlTag = <T = Record<string, SqlValue>>(
   ...values: SqlValue[]
 ) => T[];
 
+/** How many events to keep. Habit learning reads the latest 300. */
+const EVENTS_RETAINED = 2000;
+
 interface TaskRow {
   id: string;
   title: string;
@@ -188,6 +191,14 @@ export class NudgeStore {
     return rows.map(toRecord);
   }
 
+  /** Every active task, uncapped: used for scheduling repair and lookups. */
+  listActive(): TaskRecord[] {
+    return this.sql<TaskRow>`SELECT * FROM tasks
+      WHERE status IN ('pending', 'nudged', 'snoozed') ORDER BY due_at`.map(
+      toRecord
+    );
+  }
+
   /** Active tasks plus the most recently finished ones, for the UI. */
   listForPanel(doneLimit = 20): TaskRecord[] {
     const active = this.sql<TaskRow>`SELECT * FROM tasks
@@ -281,6 +292,9 @@ export class NudgeStore {
   ): void {
     this.sql`INSERT INTO events (task_id, type, at, meta)
       VALUES (${taskId}, ${type}, ${at.toISOString()}, ${JSON.stringify(meta)})`;
+    // Keep the log bounded; learning only ever reads the most recent events.
+    this.sql`DELETE FROM events
+      WHERE id <= (SELECT MAX(id) FROM events) - ${EVENTS_RETAINED}`;
   }
 
   recentEvents(limit = 300): TaskEvent[] {

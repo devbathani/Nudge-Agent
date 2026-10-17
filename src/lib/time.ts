@@ -268,6 +268,41 @@ export function formatLocal(
   );
 }
 
+/**
+ * Signed minutes between `date` (in local time) and local "HH:MM", wrapped
+ * into (-720, 720]. Positive means `date` is after the target time, so
+ * 23:55 vs 00:05 is +10, never -1430.
+ */
+export function minutesFromLocalTime(
+  date: Date,
+  timeZone: string,
+  hhmm: string
+): number {
+  const target = parseHHMM(hhmm) ?? 0;
+  const p = getZonedParts(date, timeZone);
+  let diff = p.hour * 60 + p.minute - target;
+  if (diff > 720) diff -= 1440;
+  if (diff <= -720) diff += 1440;
+  return diff;
+}
+
+/**
+ * Parse a duration such as 15, "15", "15m", "90 min", "1h", "1.5 hours" or
+ * "2d" into minutes. Bare numbers are minutes. Returns null if unparseable.
+ */
+export function parseDurationMinutes(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  const m =
+    /^\s*(\d+(?:\.\d+)?)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?)?\s*$/i.exec(
+      value
+    );
+  if (!m) return null;
+  const unit = (m[2] ?? "m").toLowerCase();
+  const factor = unit.startsWith("h") ? 60 : unit.startsWith("d") ? 1440 : 1;
+  return Number(m[1]) * factor;
+}
+
 export function describeMinutes(minutes: number): string {
   if (minutes < 60) return `${Math.round(minutes)} min`;
   if (minutes < 60 * 24) {

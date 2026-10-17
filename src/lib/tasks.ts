@@ -136,6 +136,54 @@ export function planNextNudge(args: {
   );
 }
 
+/**
+ * Whether another nudge may be sent. A snoozed task always gets the one
+ * reminder the user asked for, even past its cap, without changing the cap.
+ */
+export function hasNudgesLeft(
+  status: TaskStatus,
+  nudgeCount: number,
+  maxNudges: number
+): boolean {
+  return status === "snoozed" || nudgeCount < maxNudges;
+}
+
+export type SnoozeResult =
+  | { ok: true; until: Date }
+  | { ok: false; error: string };
+
+/**
+ * When a snooze should end. Snoozing never pulls a reminder earlier: for a
+ * task that isn't due yet, a relative snooze counts from its due time, and an
+ * absolute time at or before the due time is rejected.
+ */
+export function resolveSnoozeUntil(args: {
+  status: TaskStatus;
+  dueAt: Date;
+  now: Date;
+  minutes?: number;
+  until?: Date;
+}): SnoozeResult {
+  const { status, dueAt, now } = args;
+  const notYetDue = status === "pending" && dueAt.getTime() > now.getTime();
+  if (args.until) {
+    if (notYetDue && args.until.getTime() <= dueAt.getTime()) {
+      return {
+        ok: false,
+        error:
+          "That is before the task is even due, so snoozing would remind the user earlier. Use updateTask to change the due time instead."
+      };
+    }
+    return { ok: true, until: args.until };
+  }
+  const minutes = args.minutes ?? 30;
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return { ok: false, error: "Snooze length must be a positive number of minutes." };
+  }
+  const base = notYetDue ? dueAt : now;
+  return { ok: true, until: new Date(base.getTime() + minutes * 60_000) };
+}
+
 export function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
