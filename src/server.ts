@@ -21,6 +21,7 @@ import {
 } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { NudgeStore, toPublicTask, type SqlTag, type TaskRecord } from "./db";
+import { withDedupedStreams } from "./lib/aiStream";
 import { deriveLearnings } from "./lib/habits";
 import {
   buildBriefing,
@@ -149,9 +150,12 @@ export class NudgeAgent
     let model;
     try {
       if (!this.env.AI) throw new Error("AI binding is not configured");
-      model = createWorkersAI({ binding: this.env.AI })(MODEL_ID, {
-        sessionAffinity: this.sessionAffinity
-      });
+      model = createWorkersAI({ binding: withDedupedStreams(this.env.AI) })(
+        MODEL_ID,
+        {
+          sessionAffinity: this.sessionAffinity
+        }
+      );
     } catch (error) {
       console.error("Workers AI unavailable", error);
       return textResponse(friendlyModelError(error));
@@ -751,7 +755,9 @@ export class NudgeAgent
         timeZone: this.prefs.timezone
       });
       const { text } = await generateText({
-        model: createWorkersAI({ binding: this.env.AI })(MODEL_ID),
+        model: createWorkersAI({ binding: withDedupedStreams(this.env.AI) })(
+          MODEL_ID
+        ),
         system,
         prompt,
         temperature: 0.7,

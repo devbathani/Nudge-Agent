@@ -4,13 +4,19 @@
 
 Built on the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/), Durable Objects and Llama 3.3 on Workers AI. No external API keys.
 
+**▶ Live demo: [nudge-agent.bathanid888.workers.dev](https://nudge-agent.bathanid888.workers.dev/)**
+
 ---
 
 ## Demo
 
+Try it at **https://nudge-agent.bathanid888.workers.dev/**. No sign-up: each browser gets its own private agent (see [Identity](#design-decisions-and-trade-offs)).
+
+1. Type “Remind me in 2 minutes to drink a glass of water” and allow notifications when asked.
+2. Wait for the 🔔 nudge to arrive (toast + system notification) and appear in the chat.
+3. Click **Snooze 15m**, then **Done** in the side panel, or just type “done”.
+
 > 📸 _Screenshot / GIF placeholder: add `docs/demo.gif` here._
->
-> Suggested capture: type “Remind me in 2 minutes to drink a glass of water”, wait for the 🔔 nudge to arrive (toast + system notification), click **Snooze 1h**, then **Done** in the side panel.
 
 ## What it does
 
@@ -109,6 +115,60 @@ stateDiagram-v2
 
 Default caps: gentle 3, firm 5, urgent 8 nudges (override with `maxNudges`, 1–20). \*Once Nudge has learned your typical response time, the first gap becomes 1.5× that (15–180 min).
 
+## Code architecture
+
+The code is split into layers. Each layer depends only on the layers below it, and the domain rules sit at the bottom with no Cloudflare imports:
+
+```
+ Browser   src/client.tsx → src/app/App.tsx (+ components/, identity.ts, useNotifications.ts)
+              │  useAgent (WebSocket: state sync + RPC)   useAgentChat (streaming chat)
+              ▼
+ Worker    src/server.ts  default export fetch() → routeAgentRequest() ─ else ─▶ static assets
+              ▼
+ Agent     src/server.ts  NudgeAgent extends AIChatAgent   (one Durable Object per user)
+              │  onChatMessage · @callable RPC · onTaskDue / onBriefing · syncState
+              ├──▶ src/tools.ts      LLM tools → NudgeService methods on the agent
+              ├──▶ src/db.ts         NudgeStore: SQL repository + migrations
+              ├──▶ src/lib/aiStream.ts  Workers AI stream fix (see Deviations)
+              ▼
+ Domain    src/lib/{tasks,time,habits,prompts,types}.ts   pure functions, unit tested
+```
+
+| Layer            | Files                                                     | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Client**       | [`src/client.tsx`](src/client.tsx), [`src/app/`](src/app) | React 19 SPA. [`identity.ts`](src/app/identity.ts) creates an anonymous per-browser id that names the user's agent. `useAgent` opens the WebSocket, receives `NudgeState` pushes for the task panel and calls `@callable` methods (Done, Snooze, Cancel, Reset). `useAgentChat` streams the chat. `App.tsx` turns `nudge/fired` and `nudge/briefing` broadcasts into toasts and, through [`useNotifications.ts`](src/app/useNotifications.ts), system notifications. |
+| **Worker entry** | [`src/server.ts`](src/server.ts) (bottom)                 | `routeAgentRequest()` forwards `/agents/nudge-agent/:id` to that user's Durable Object. Every other path is served by Static Assets (the Vite build), with SPA fallback.                                                                                                                                                                                                                                                                                             |
+| **Agent**        | [`src/server.ts`](src/server.ts)                          | `NudgeAgent` owns one user's world. **Chat:** `onChatMessage` builds the system prompt (local time, prefs, learnings, open tasks), then streams Llama 3.3 with tools. **RPC:** `hello`, `rpcAddTask`, `rpcComplete`, `rpcSnooze`, `rpcCancel`, `rpcSetPreferences`, `resetMyData`. **Autonomy:** `onTaskDue` and `onBriefing` run from the scheduler. **Sync:** `syncState()` pushes the panel view after every change.                                              |
+| **Tools**        | [`src/tools.ts`](src/tools.ts)                            | `addTask`, `listTasks`, `updateTask`, `snoozeTask`, `completeTask`, `cancelTask`, `getBriefing`, `setPreferences`. Zod schemas plus lenient input normalisation for Llama. Tools call a `NudgeService` interface, implemented by the agent, so the chat and the side panel go through the same code paths.                                                                                                                                                           |
+| **Persistence**  | [`src/db.ts`](src/db.ts)                                  | `NudgeStore` over the agent's SQLite: `tasks`, `events` (append-only log used for learning) and `prefs`, with versioned, idempotent migrations. It receives the `sql` tag as a parameter, so it doesn't import the platform.                                                                                                                                                                                                                                         |
+| **Domain**       | [`src/lib/`](src/lib)                                     | State machine and backoff (`tasks.ts`), time-zone math, quiet hours and cron derivation (`time.ts`), habit learning (`habits.ts`), prompts and template nudges (`prompts.ts`), shared types (`types.ts`). Has no Cloudflare imports and is covered by the Vitest suite.                                                                                                                                                                                              |
+
+**A chat turn, end to end:**
+
+1. The browser sends the message over the agent WebSocket, with its IANA timezone in the body.
+2. The Worker routes it to the user's `NudgeAgent`, and `AIChatAgent` persists it to SQLite.
+3. `onChatMessage` builds the system prompt and calls `streamText` against Workers AI, sending the last 24 messages and the tools.
+4. Llama calls tools such as `addTask`. These validate the input, write to SQLite, call `this.schedule(...)` and call `syncState()`.
+5. Tokens stream back to the browser, and the panel updates from the state push at the same time.
+
+## Where Cloudflare is used
+
+Everything runs on Cloudflare. There is no other backend, database, queue or cron service.
+
+| Cloudflare product                                   | What Nudge uses it for                                                                                                                                                                                                         | Where                                                                                                                                                       |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Workers**                                          | Hosts the whole app at `*.workers.dev`. The `fetch` handler routes agent traffic and falls through to static assets.                                                                                                           | [`src/server.ts`](src/server.ts) (`export default`), [`wrangler.jsonc`](wrangler.jsonc) (`main`)                                                            |
+| **Workers Static Assets**                            | Serves the Vite-built React SPA from the same Worker, with `single-page-application` fallback. `run_worker_first: ["/agents/*"]` sends agent requests to the Worker code first.                                                | [`wrangler.jsonc`](wrangler.jsonc) (`assets`)                                                                                                               |
+| **Durable Objects**                                  | One `NudgeAgent` instance per user. It is the WebSocket endpoint for chat, RPC and state sync, and it runs single-threaded, which keeps task updates race-free.                                                                | [`src/server.ts`](src/server.ts) (`NudgeAgent`), [`wrangler.jsonc`](wrangler.jsonc) (`durable_objects`)                                                     |
+| **Durable Object SQLite storage**                    | Tasks, events and preferences (`this.sql`), the chat history (persisted by `AIChatAgent`) and the scheduler's own table.                                                                                                       | [`src/db.ts`](src/db.ts), [`wrangler.jsonc`](wrangler.jsonc) (`migrations` → `new_sqlite_classes`)                                                          |
+| **Durable Object Alarms** (via the Agents scheduler) | `this.schedule(date, …)` for due reminders, backoff follow-ups and snooze wake-ups. `this.schedule(cron, …)` for the daily briefing. The agent wakes up even with no tab open.                                                 | [`src/server.ts`](src/server.ts) (`scheduleTaskAt`, `onTaskDue`, `ensureBriefingSchedule`, `onBriefing`)                                                    |
+| **Workers AI**                                       | Llama 3.3 70B (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`) through the `AI` binding: streaming chat with tool calling, and one-line nudge texts in the right tone. Session affinity routes a user's turns to the same replica. | [`src/server.ts`](src/server.ts) (`onChatMessage`, `composeNudge`), [`src/lib/aiStream.ts`](src/lib/aiStream.ts), [`wrangler.jsonc`](wrangler.jsonc) (`ai`) |
+| **Agents SDK** (`agents`, `@cloudflare/ai-chat`)     | `AIChatAgent`, `routeAgentRequest`, `@callable` RPC, `setState`/`broadcast`, `schedule`, `persistMessages`. On the client: `useAgent` and `useAgentChat`.                                                                      | [`src/server.ts`](src/server.ts), [`src/app/App.tsx`](src/app/App.tsx)                                                                                      |
+| **Cloudflare Vite plugin**                           | `npm run dev` runs the Worker and Durable Object in the real `workerd` runtime locally, and proxies the `AI` binding to your account (`remote: true`).                                                                         | [`vite.config.ts`](vite.config.ts)                                                                                                                          |
+| **Workers Observability**                            | Logs and errors from the deployed Worker, viewable in the dashboard.                                                                                                                                                           | [`wrangler.jsonc`](wrangler.jsonc) (`observability`)                                                                                                        |
+| **Kumo** (`@cloudflare/kumo`)                        | Cloudflare's React component library, used for the UI.                                                                                                                                                                         | [`src/app/`](src/app)                                                                                                                                       |
+| **Workers Builds** (optional)                        | Git-connected deploys from GitHub (see [Deploy](#deploy)).                                                                                                                                                                     | Cloudflare dashboard                                                                                                                                        |
+
 ## The four required components
 
 | Requirement                    | How                                                                                                                                                                                                          | Files                                                                                                                                                        |
@@ -182,6 +242,7 @@ src/
     time.ts          Time-zone math, quiet hours, dueAt validation, cron derivation
     habits.ts        Habit learning from the events log
     prompts.ts       System prompt, nudge prompt + template fallback, briefing text
+    aiStream.ts      Workers AI binding wrapper that de-duplicates streamed chunks
   app/               React client
     App.tsx          Connection, chat, notifications, layout
     identity.ts      Anonymous per-browser id → agent instance name
@@ -214,6 +275,7 @@ scripts/smoke.mjs    End-to-end smoke test against a running server
 - **Vitest 5.x** is used because Vitest 4.x fails npm's peer resolution in this dependency tree (Vite 8, `@types/node` 26).
 - From the starter, the **MCP client panel, image attachments and demo tools** were removed to keep the agent focused. One extra callable, `rpcAddTask`, exists for non-chat clients and the smoke test.
 - **Reset my data** also clears the chat history (it contains the same personal data).
+- **The `AI` binding is wrapped by [`withDedupedStreams`](src/lib/aiStream.ts).** Workers AI streams every chunk in both the OpenAI format (`choices[0].delta`) and the legacy native format (`response`, `tool_calls`). `workers-ai-provider` 3.3.x and 4.0 emit both copies, so every token showed up twice and tool-call arguments became invalid JSON. The wrapper drops the native copies when `choices` is present. Remove it once the provider is fixed.
 
 ## Known limitations
 
