@@ -36,6 +36,9 @@ export function TaskItem({
     task.status !== "snoozed" &&
     Date.parse(task.dueAt) <= now.getTime();
 
+  // Snoozing a task that isn't due yet would only move its reminder earlier.
+  const canSnooze = !finished && (overdue || task.status !== "pending");
+
   let when: string;
   if (task.status === "done" && task.completedAt) {
     when = `Done ${relativeTime(task.completedAt, now)}`;
@@ -92,30 +95,37 @@ export function TaskItem({
           >
             <CheckIcon size={12} weight="bold" /> Done
           </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onAction(task, "snooze-15m")}
-            className={actionBtn}
-          >
-            15m
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onAction(task, "snooze-1h")}
-            className={actionBtn}
-          >
-            1h
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onAction(task, "snooze-tomorrow")}
-            className={actionBtn}
-          >
-            Tomorrow
-          </button>
+          {canSnooze && (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onAction(task, "snooze-15m")}
+                className={actionBtn}
+                aria-label={`Snooze ${task.title} for 15 minutes`}
+              >
+                15m
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onAction(task, "snooze-1h")}
+                className={actionBtn}
+                aria-label={`Snooze ${task.title} for 1 hour`}
+              >
+                1h
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onAction(task, "snooze-tomorrow")}
+                className={actionBtn}
+                aria-label={`Snooze ${task.title} until tomorrow morning`}
+              >
+                Tomorrow
+              </button>
+            </>
+          )}
           <button
             type="button"
             disabled={busy}

@@ -26,8 +26,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "format": "oxfmt --write .",
-    "lint": "oxlint src/ test/",
-    "check": "oxfmt --check . && oxlint src/ test/ && tsc --noEmit && vitest run",
+    "lint": "oxlint src/ test/ scripts/",
+    "check": "oxfmt --check . && oxlint src/ test/ scripts/ && tsc --noEmit && vitest run",
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {

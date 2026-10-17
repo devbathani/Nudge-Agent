@@ -95,6 +95,7 @@ function NudgeApp() {
   const [now, refreshNow] = useNow();
   const toasts = useKumoToastManager();
   const notifications = useNotifications();
+  const { notify, askOnce } = notifications;
 
   const [connected, setConnected] = useState(false);
   const [state, setState] = useState<NudgeState>(EMPTY_STATE);
@@ -121,21 +122,17 @@ function NudgeApp() {
           description: data.text,
           timeout: 8000
         });
-        notifications.notify(
-          `Nudge: ${data.title}`,
-          data.text,
-          `nudge-${data.taskId}`
-        );
+        notify(`Nudge: ${data.title}`, data.text, `nudge-${data.taskId}`);
       } else if (data?.type === "nudge/briefing") {
         toasts.add({ title: "Your daily briefing is ready", timeout: 6000 });
-        notifications.notify(
+        notify(
           "Nudge: daily briefing",
           "Your summary for today is in the chat.",
           "nudge-briefing"
         );
       }
     },
-    [toasts, notifications]
+    [toasts, notify]
   );
 
   const agent = useAgent<NudgeAgent, NudgeState>({
@@ -183,13 +180,13 @@ function NudgeApp() {
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || isStreaming || !connected) return;
-      notifications.askOnce(); // user gesture: a good moment to ask, once
+      askOnce(); // user gesture: a good moment to ask, once
       setDismissedError(null);
       setInput("");
       sendMessage({ role: "user", parts: [{ type: "text", text: trimmed }] });
       if (textareaRef.current) textareaRef.current.style.height = "auto";
     },
-    [isStreaming, connected, notifications, sendMessage]
+    [isStreaming, connected, askOnce, sendMessage]
   );
 
   const runTaskAction = useCallback(
@@ -372,6 +369,7 @@ function NudgeApp() {
                 messages={messages}
                 tasks={state.tasks}
                 isStreaming={isStreaming}
+                busyIds={busyIds}
                 onAction={runTaskAction}
               />
               {isStreaming &&

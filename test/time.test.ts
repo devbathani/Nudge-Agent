@@ -4,8 +4,10 @@ import {
   isInQuietHours,
   isValidTimeZone,
   localDayKey,
+  minutesFromLocalTime,
   nextLocalTime,
   normalizeHHMM,
+  parseDurationMinutes,
   toLocalIso,
   tzOffsetMinutes,
   utcCronForLocalTime,
@@ -206,5 +208,54 @@ describe("validateDueAt", () => {
   it("puts a usable example in the error", () => {
     const r = validateDueAt("tomorrow", now, KOLKATA);
     expect(!r.ok && r.error).toMatch(/\+05:30/);
+  });
+});
+
+describe("minutesFromLocalTime (briefing timing)", () => {
+  it("is signed and wraps around midnight in both directions", () => {
+    const at = (iso: string) => new Date(iso);
+    expect(
+      minutesFromLocalTime(at("2026-10-17T08:05:00Z"), "UTC", "08:00")
+    ).toBe(5);
+    expect(
+      minutesFromLocalTime(at("2026-10-17T07:40:00Z"), "UTC", "08:00")
+    ).toBe(-20);
+    // Briefing at 23:55 delivered at 00:05 is 10 minutes late, not 1430 early.
+    expect(
+      minutesFromLocalTime(at("2026-10-18T00:05:00Z"), "UTC", "23:55")
+    ).toBe(10);
+    // Briefing at 00:05 fired at 23:50 is 15 minutes early.
+    expect(
+      minutesFromLocalTime(at("2026-10-17T23:50:00Z"), "UTC", "00:05")
+    ).toBe(-15);
+  });
+
+  it("uses the user's zone", () => {
+    // 02:30Z = 08:00 in Kolkata.
+    expect(
+      minutesFromLocalTime(
+        new Date("2026-10-17T02:30:00Z"),
+        "Asia/Kolkata",
+        "08:00"
+      )
+    ).toBe(0);
+  });
+});
+
+describe("parseDurationMinutes", () => {
+  it("understands units", () => {
+    expect(parseDurationMinutes(15)).toBe(15);
+    expect(parseDurationMinutes("15")).toBe(15);
+    expect(parseDurationMinutes("90 min")).toBe(90);
+    expect(parseDurationMinutes("1h")).toBe(60);
+    expect(parseDurationMinutes("1.5 hours")).toBe(90);
+    expect(parseDurationMinutes("2d")).toBe(2880);
+  });
+
+  it("rejects things it can't read instead of guessing", () => {
+    expect(parseDurationMinutes("abc")).toBeNull();
+    expect(parseDurationMinutes("")).toBeNull();
+    expect(parseDurationMinutes("1 month")).toBeNull();
+    expect(parseDurationMinutes(Number.NaN)).toBeNull();
   });
 });

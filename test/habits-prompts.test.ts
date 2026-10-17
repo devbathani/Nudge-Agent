@@ -166,6 +166,9 @@ describe("nudge text", () => {
     expect(sanitizeNudgeText('"Hey, rent is due!"')).toBe("Hey, rent is due!");
     expect(sanitizeNudgeText("Message: Pay it now.")).toBe("Pay it now.");
     expect(sanitizeNudgeText("  ")).toBeNull();
+    expect(sanitizeNudgeText("Rent is due.\n\n  Reply done.")).toBe(
+      "Rent is due. Reply done."
+    );
     expect(sanitizeNudgeText(null)).toBeNull();
     expect(sanitizeNudgeText("x".repeat(400))?.length).toBe(318);
   });

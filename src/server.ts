@@ -856,7 +856,8 @@ export class NudgeAgent
   private async repairSchedules() {
     const live = new Set((await this.listSchedules()).map((s) => s.id));
     for (const task of this.store.listActive()) {
-      if (!hasNudgesLeft(task.status, task.nudgeCount, task.maxNudges)) continue;
+      if (!hasNudgesLeft(task.status, task.nudgeCount, task.maxNudges))
+        continue;
       if (task.scheduleId && live.has(task.scheduleId)) continue;
       await this.scheduleTaskAt(task.id, this.nextReminderFor(task));
     }

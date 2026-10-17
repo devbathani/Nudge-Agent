@@ -153,6 +153,38 @@ try {
     dailyDone.nextOccurrence?.due
   );
 
+  // 4. Concurrency: two completions racing (chat + panel) must not create
+  //    two next occurrences.
+  const race = await client.call("rpcAddTask", [
+    { title: "Smoke: race", dueAt: inSeconds(3600), repeat: "weekly" }
+  ]);
+  const [r1, r2] = await Promise.all([
+    client.call("rpcComplete", [race.task.id]),
+    client.call("rpcComplete", [race.task.id])
+  ]);
+  check(
+    "concurrent completes: exactly one succeeds",
+    [r1, r2].filter((r) => r.ok).length === 1
+  );
+  await sleep(500);
+  check(
+    "concurrent completes: exactly one next occurrence",
+    state.tasks.filter(
+      (t) => t.title === "Smoke: race" && t.status === "pending"
+    ).length === 1
+  );
+
+  // 5. Snoozing a task that isn't due yet never moves it earlier.
+  const future = await client.call("rpcAddTask", [
+    { title: "Smoke: next week", dueAt: inSeconds(7 * 86400) }
+  ]);
+  const tooEarly = await client.call("rpcSnooze", [future.task.id, "tomorrow"]);
+  check(
+    "snoozing a not-yet-due task to an earlier time is rejected",
+    tooEarly.ok === false,
+    tooEarly.error
+  );
+
   const reset = await client.call("resetMyData", ["Asia/Kolkata"]);
   await waitFor(() => state?.tasks.length === 0, 5_000, "reset");
   check("reset clears everything", reset.ok === true);

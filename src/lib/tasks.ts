@@ -178,7 +178,10 @@ export function resolveSnoozeUntil(args: {
   }
   const minutes = args.minutes ?? 30;
   if (!Number.isFinite(minutes) || minutes <= 0) {
-    return { ok: false, error: "Snooze length must be a positive number of minutes." };
+    return {
+      ok: false,
+      error: "Snooze length must be a positive number of minutes."
+    };
   }
   const base = notYetDue ? dueAt : now;
   return { ok: true, until: new Date(base.getTime() + minutes * 60_000) };

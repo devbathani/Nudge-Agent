@@ -90,11 +90,13 @@ function AutonomousCard({
   message,
   meta,
   task,
+  busy,
   onAction
 }: {
   message: UIMessage;
   meta: AutonomousMessageMeta;
   task: Task | undefined;
+  busy: boolean;
   onAction: (task: Task, action: TaskAction) => void;
 }) {
   const text = message.parts
@@ -150,15 +152,17 @@ function AutonomousCard({
           <div className="mt-2.5 flex flex-wrap gap-1.5">
             <button
               type="button"
+              disabled={busy}
               onClick={() => onAction(task, "done")}
-              className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-500/30 hover:bg-emerald-500/20 dark:text-emerald-300"
+              className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-500/30 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:text-emerald-300"
             >
               <CheckIcon size={12} weight="bold" /> Done
             </button>
             <button
               type="button"
+              disabled={busy}
               onClick={() => onAction(task, "snooze-1h")}
-              className="rounded-md px-2.5 py-1 text-xs font-medium text-kumo-default ring-1 ring-inset ring-kumo-line hover:bg-kumo-control"
+              className="rounded-md px-2.5 py-1 text-xs font-medium text-kumo-default ring-1 ring-inset ring-kumo-line hover:bg-kumo-control disabled:cursor-not-allowed disabled:opacity-50"
             >
               Snooze 1h
             </button>
@@ -178,11 +182,13 @@ export function MessageList({
   messages,
   tasks,
   isStreaming,
+  busyIds,
   onAction
 }: {
   messages: UIMessage[];
   tasks: readonly Task[];
   isStreaming: boolean;
+  busyIds: ReadonlySet<string>;
   onAction: (task: Task, action: TaskAction) => void;
 }) {
   return (
@@ -201,6 +207,7 @@ export function MessageList({
                   ? tasks.find((t) => t.id === meta.taskId)
                   : undefined
               }
+              busy={meta.taskId ? busyIds.has(meta.taskId) : false}
               onAction={onAction}
             />
           );

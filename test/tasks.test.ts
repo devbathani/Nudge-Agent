@@ -4,11 +4,13 @@ import {
   escalationLevel,
   generateTaskId,
   groupTasks,
+  hasNudgesLeft,
   isActive,
   nextOccurrence,
   occurrenceAt,
   planNextNudge,
   resolveMaxNudges,
+  resolveSnoozeUntil,
   transition,
   TRANSITIONS,
   type TaskAction
@@ -242,5 +244,54 @@ describe("generateTaskId", () => {
     for (let i = 0; i < 50; i++) {
       expect(generateTaskId()).toMatch(/^[a-hjkmnp-z2-9]{6}$/);
     }
+  });
+});
+
+describe("nudge allowance", () => {
+  it("stops at the cap but always honours a snooze", () => {
+    expect(hasNudgesLeft("nudged", 2, 3)).toBe(true);
+    expect(hasNudgesLeft("nudged", 3, 3)).toBe(false);
+    expect(hasNudgesLeft("snoozed", 3, 3)).toBe(true);
+  });
+});
+
+describe("resolveSnoozeUntil", () => {
+  const now = new Date("2026-10-17T10:00:00Z");
+
+  it("counts from now once the task is due", () => {
+    const r = resolveSnoozeUntil({
+      status: "nudged",
+      dueAt: new Date("2026-10-17T09:00:00Z"),
+      now,
+      minutes: 60
+    });
+    expect(r.ok && r.until.toISOString()).toBe("2026-10-17T11:00:00.000Z");
+  });
+
+  it("never pulls a not-yet-due task earlier", () => {
+    const dueAt = new Date("2026-10-24T09:00:00Z"); // next week
+    const r = resolveSnoozeUntil({
+      status: "pending",
+      dueAt,
+      now,
+      minutes: 60
+    });
+    expect(r.ok && r.until.toISOString()).toBe("2026-10-24T10:00:00.000Z");
+    const early = resolveSnoozeUntil({
+      status: "pending",
+      dueAt,
+      now,
+      until: new Date("2026-10-18T09:00:00Z")
+    });
+    expect(early.ok).toBe(false);
+  });
+
+  it("accepts an explicit time and rejects non-positive lengths", () => {
+    const until = new Date("2026-10-18T09:00:00Z");
+    const r = resolveSnoozeUntil({ status: "nudged", dueAt: now, now, until });
+    expect(r.ok && r.until).toBe(until);
+    expect(
+      resolveSnoozeUntil({ status: "nudged", dueAt: now, now, minutes: 0 }).ok
+    ).toBe(false);
   });
 });
